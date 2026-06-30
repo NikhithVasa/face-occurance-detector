@@ -42,6 +42,8 @@ from face_occurrence_detector.config import (
     DEFAULT_MODEL_NAME,
     DEFAULT_PARALLEL_CHUNKS,
     DEFAULT_SIMILARITY_THRESHOLD,
+    DEFAULT_VERIFY_MAX_TOKENS,
+    DEFAULT_VERIFY_PROMPT,
 )
 from face_occurrence_detector.insightface_matcher import InsightFaceMatcher
 from face_occurrence_detector.pipeline import run_detection
@@ -120,6 +122,13 @@ def handler(job: dict) -> dict:
                 merge_gap_sec=float(inp.get("merge_gap_sec", DEFAULT_MERGE_GAP_SEC)),
                 min_interval_sec=float(
                     inp.get("min_interval_sec", DEFAULT_MIN_INTERVAL_SEC)
+                ),
+                verify_url=inp.get("verify_url"),
+                verify_api_key=inp.get("verify_api_key"),
+                verify_prompt=inp.get("verify_prompt", DEFAULT_VERIFY_PROMPT),
+                verify_model=inp.get("verify_model"),
+                verify_max_tokens=int(
+                    inp.get("verify_max_tokens", DEFAULT_VERIFY_MAX_TOKENS)
                 ),
                 progress=False,
             )

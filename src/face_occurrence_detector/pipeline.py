@@ -24,11 +24,14 @@ from .config import (
     DEFAULT_PARALLEL_CHUNKS,
     DEFAULT_PROVIDERS,
     DEFAULT_SIMILARITY_THRESHOLD,
+    DEFAULT_VERIFY_MAX_TOKENS,
+    DEFAULT_VERIFY_PROMPT,
 )
 from .insightface_matcher import InsightFaceMatcher
 from .output import build_output_dict, write_output_json
 from .timeline import merge_matches_into_intervals
 from .types import FrameMatch, TargetEmbedding
+from .verification import verify_intervals
 from .video_reader import get_video_duration, sample_frames
 
 
@@ -89,6 +92,11 @@ def run_detection(
     model_name: str = DEFAULT_MODEL_NAME,
     providers: list[str] | None = None,
     matcher: InsightFaceMatcher | None = None,
+    verify_url: str | None = None,
+    verify_api_key: str | None = None,
+    verify_prompt: str = DEFAULT_VERIFY_PROMPT,
+    verify_model: str | None = None,
+    verify_max_tokens: int = DEFAULT_VERIFY_MAX_TOKENS,
     progress: bool = True,
 ) -> dict:
     """
@@ -189,6 +197,26 @@ def run_detection(
         merge_gap_sec=merge_gap_sec,
         min_interval_sec=min_interval_sec,
     )
+
+    # 6b. Optional second-pass vision-LLM verification. Only intervals the
+    # external model confirms as the same person are kept.
+    if verify_url and intervals:
+        if not targets:
+            raise ValueError("Verification requires at least one target image.")
+        log(f"Verifying {len(intervals)} interval(s) via vision-LLM...")
+        intervals = verify_intervals(
+            video_path=video,
+            intervals=intervals,
+            matches=all_matches,
+            target_image_path=targets[0],
+            verify_url=verify_url,
+            api_key=verify_api_key or "",
+            prompt=verify_prompt,
+            model=verify_model,
+            max_tokens=verify_max_tokens,
+            log=log,
+        )
+        log(f"  Verified interval(s): {len(intervals)}")
 
     # 7. Build result and optionally write JSON.
     data = build_output_dict(
