@@ -39,7 +39,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     # CPU/Azure providers). Remove both and reinstall ONLY the GPU build last so
     # CUDAExecutionProvider is the provider that ends up resident.
     && python -m pip uninstall -y onnxruntime onnxruntime-gpu \
-    && python -m pip install onnxruntime-gpu
+    && python -m pip install onnxruntime-gpu==1.22.0
 
 # Fail the build early if the CUDA execution provider is not compiled into
 # onnxruntime. Actual GPU availability is verified at runtime on the RunPod host.

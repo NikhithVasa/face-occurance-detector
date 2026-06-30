@@ -1,5 +1,8 @@
 insightface
-onnxruntime-gpu
+# Pin to the last release that ships a CUDA 12 wheel by default. 1.23.0+
+# switched the default PyPI build to CUDA 13 (libcudart.so.13), which does not
+# match the CUDA 12.4 runtime in the base image.
+onnxruntime-gpu==1.22.0
 opencv-python
 numpy
 tqdm
