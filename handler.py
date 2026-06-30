@@ -130,17 +130,23 @@ def handler(job: dict) -> dict:
 
 
 def _job_from_env() -> dict | None:
-    """Build a job dict from environment variables, or None if VIDEO_URL is unset.
+    """Build a job dict from environment variables, or None if not in one-shot mode.
 
-    Lets a plain RunPod Pod process a video without a queue or baked-in file:
-    set VIDEO_URL + TARGET_URLS in the pod's environment and (re)start it.
+    One-shot mode is opt-in via RUN_ONESHOT (1/true/yes). This keeps a plain Pod
+    able to process a video without a queue (set RUN_ONESHOT=1 + VIDEO_URL +
+    TARGET_URLS and start it), while ensuring a Serverless Endpoint is never
+    accidentally hijacked just because VIDEO_URL happens to be set.
 
+        RUN_ONESHOT            "1"/"true"/"yes" to enable one-shot mode
         VIDEO_URL              single http(s) URL
         TARGET_URLS            one or more http(s) URLs, separated by commas,
                                whitespace, or newlines
         FPS, CHUNKS, PARALLEL_CHUNKS, SIMILARITY_THRESHOLD,
         MERGE_GAP_SEC, MIN_INTERVAL_SEC   optional numeric overrides
     """
+    if os.getenv("RUN_ONESHOT", "").strip().lower() not in ("1", "true", "yes"):
+        return None
+
     video_url = os.getenv("VIDEO_URL")
     if not video_url:
         return None
