@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "face-occurrence-detector"
+version = "0.1.0"
+description = "Detect face occurrences of a target person in a video using InsightFace buffalo_l."
+requires-python = ">=3.10"
+dependencies = [
+    "insightface",
+    "onnxruntime-gpu",
+    "opencv-python",
+    "numpy",
+    "tqdm",
+    "pydantic",
+]
+
+[project.scripts]
+face-occurrence-detector = "face_occurrence_detector.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

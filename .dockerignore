@@ -1,0 +1,38 @@
+# Version control / CI
+.git
+.gitignore
+.github
+
+# Python caches and build artifacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local IO and debug outputs (not needed in the image)
+output/
+debug/
+examples/videos/
+examples/targets/
+
+# Media and large local samples
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.jpg
+*.jpeg
+*.png
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
