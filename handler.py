@@ -26,10 +26,8 @@ Provide either the ``*_path`` form (files on a mounted network volume) or the
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
-import time
 import urllib.parse
 import urllib.request
 
@@ -129,59 +127,5 @@ def handler(job: dict) -> dict:
         return {"error": str(exc)}
 
 
-def _job_from_env() -> dict | None:
-    """Build a job dict from environment variables, or None if not in one-shot mode.
-
-    One-shot mode is opt-in via RUN_ONESHOT (1/true/yes). This keeps a plain Pod
-    able to process a video without a queue (set RUN_ONESHOT=1 + VIDEO_URL +
-    TARGET_URLS and start it), while ensuring a Serverless Endpoint is never
-    accidentally hijacked just because VIDEO_URL happens to be set.
-
-        RUN_ONESHOT            "1"/"true"/"yes" to enable one-shot mode
-        VIDEO_URL              single http(s) URL
-        TARGET_URLS            one or more http(s) URLs, separated by commas,
-                               whitespace, or newlines
-        FPS, CHUNKS, PARALLEL_CHUNKS, SIMILARITY_THRESHOLD,
-        MERGE_GAP_SEC, MIN_INTERVAL_SEC   optional numeric overrides
-    """
-    if os.getenv("RUN_ONESHOT", "").strip().lower() not in ("1", "true", "yes"):
-        return None
-
-    video_url = os.getenv("VIDEO_URL")
-    if not video_url:
-        return None
-
-    raw_targets = os.getenv("TARGET_URLS", "")
-    targets = [t for t in raw_targets.replace(",", " ").split() if t]
-
-    inp: dict = {"video_url": video_url, "target_urls": targets}
-    for env_key, job_key in (
-        ("FPS", "fps"),
-        ("CHUNKS", "chunks"),
-        ("PARALLEL_CHUNKS", "parallel_chunks"),
-        ("SIMILARITY_THRESHOLD", "similarity_threshold"),
-        ("MERGE_GAP_SEC", "merge_gap_sec"),
-        ("MIN_INTERVAL_SEC", "min_interval_sec"),
-    ):
-        value = os.getenv(env_key)
-        if value is not None and value != "":
-            inp[job_key] = value
-
-    return {"input": inp, "id": "env_job"}
-
-
 if __name__ == "__main__":
-    env_job = _job_from_env()
-    if env_job is not None:
-        # One-shot mode: run the env-configured job, print the result, then idle
-        # so the container stays up instead of exiting and being restarted in a
-        # loop. To process a new video, change the env vars and restart the pod.
-        result = handler(env_job)
-        print("RESULT_JSON_BEGIN")
-        print(json.dumps(result, indent=2))
-        print("RESULT_JSON_END")
-        print("Job complete. Idling; change env vars and restart for a new video.")
-        while True:
-            time.sleep(3600)
-    else:
-        runpod.serverless.start({"handler": handler})
+    runpod.serverless.start({"handler": handler})
