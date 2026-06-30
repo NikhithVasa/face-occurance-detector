@@ -81,6 +81,10 @@ COPY pyproject.toml /app/pyproject.toml
 COPY README.md /app/README.md
 COPY src /app/src
 COPY handler.py /app/handler.py
+# Baked-in test job. The RunPod serverless worker auto-detects test_input.json
+# in the working dir at startup, runs a single job, prints the result, and
+# exits. Lets a plain Pod run end-to-end without a terminal or job queue.
+COPY test_input.json /app/test_input.json
 RUN python -m pip install --no-deps .
 
 # Default entrypoint: RunPod serverless worker.
