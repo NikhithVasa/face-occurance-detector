@@ -41,6 +41,21 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip uninstall -y onnxruntime onnxruntime-gpu \
     && python -m pip install onnxruntime-gpu==1.22.0
 
+# In this base image the CUDA runtime libraries (cuBLAS, cuDNN, cuFFT, ...) are
+# provided as pip `nvidia-*` wheels under site-packages/nvidia/*/lib, which is
+# NOT on the default loader path. Without this, onnxruntime-gpu fails to dlopen
+# libonnxruntime_providers_cuda.so (missing libcublasLt.so.12 / libcudnn) and
+# silently falls back to CPUExecutionProvider at runtime. Register those
+# directories with ldconfig so the CUDA provider can be loaded.
+RUN python - <<'PY' > /etc/ld.so.conf.d/nvidia-pip-libs.conf
+import glob, os
+import nvidia
+base = os.path.dirname(nvidia.__file__)
+for path in sorted(glob.glob(os.path.join(base, "*", "lib"))):
+    print(path)
+PY
+RUN ldconfig
+
 # Fail the build early if the CUDA execution provider is not compiled into
 # onnxruntime. Actual GPU availability is verified at runtime on the RunPod host.
 RUN python - <<'PY'
