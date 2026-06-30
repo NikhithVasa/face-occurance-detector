@@ -32,7 +32,14 @@ COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install --upgrade cython numpy \
     && python -m pip install -r /app/requirements.txt \
-    && python -m pip install runpod
+    && python -m pip install runpod \
+    # insightface declares a dependency on the CPU `onnxruntime`, which gets
+    # installed alongside `onnxruntime-gpu`. Both write to the same module
+    # directory, so the CPU build silently clobbers the GPU one (leaving only
+    # CPU/Azure providers). Remove both and reinstall ONLY the GPU build last so
+    # CUDAExecutionProvider is the provider that ends up resident.
+    && python -m pip uninstall -y onnxruntime onnxruntime-gpu \
+    && python -m pip install onnxruntime-gpu
 
 # Fail the build early if the CUDA execution provider is not compiled into
 # onnxruntime. Actual GPU availability is verified at runtime on the RunPod host.
