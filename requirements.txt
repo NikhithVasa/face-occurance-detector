@@ -8,3 +8,4 @@ numpy
 tqdm
 pydantic
 psycopg2-binary
+boto3

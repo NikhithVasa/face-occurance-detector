@@ -34,6 +34,28 @@ def _resolve_providers(ctx_id: int, requested_providers: list[str]) -> list[str]
 class InsightFaceMatcher:
     """Wraps InsightFace buffalo_l for face detection and embedding comparison."""
 
+    @staticmethod
+    def _crop_face_jpeg(frame: np.ndarray, bbox: list[float], margin: float = 0.35) -> bytes | None:
+        import cv2
+
+        height, width = frame.shape[:2]
+        x1, y1, x2, y2 = bbox
+        box_width = max(1.0, x2 - x1)
+        box_height = max(1.0, y2 - y1)
+        pad_x = box_width * margin
+        pad_y = box_height * margin
+
+        left = max(0, int(x1 - pad_x))
+        top = max(0, int(y1 - pad_y))
+        right = min(width, int(x2 + pad_x))
+        bottom = min(height, int(y2 + pad_y))
+        if right <= left or bottom <= top:
+            return None
+
+        crop = frame[top:bottom, left:right]
+        ok, encoded = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        return encoded.tobytes() if ok else None
+
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL_NAME,
@@ -164,6 +186,7 @@ class InsightFaceMatcher:
                     timestamp_sec=timestamp_sec,
                     embedding=embedding,
                     bbox=face.bbox.tolist(),
+                    crop_jpeg=self._crop_face_jpeg(frame, face.bbox.tolist()),
                     chunk_id=chunk_id,
                     best_target_index=best_target_index,
                     best_similarity=best_similarity,

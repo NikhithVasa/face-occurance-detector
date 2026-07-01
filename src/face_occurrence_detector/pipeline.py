@@ -9,6 +9,7 @@ logic so it can be embedded in a CLI, a serverless handler, or an API.
 
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .chunking import compute_chunks
@@ -119,6 +120,7 @@ def _cluster_unknown_faces(
     faces: list[FrameFace],
     start_target_index: int,
     threshold: float,
+    unknown_face_dir: str | None = None,
 ) -> tuple[list[FrameMatch], list[dict]]:
     import numpy as np
 
@@ -140,9 +142,16 @@ def _cluster_unknown_faces(
                 "target_index": target_index,
                 "centroid": face.embedding.copy(),
                 "count": 0,
+                "thumbnail_jpeg": face.crop_jpeg,
+                "thumbnail_area": max(0.0, (face.bbox[2] - face.bbox[0]) * (face.bbox[3] - face.bbox[1])),
             }
             clusters.append(best_cluster)
             best_score = 1.0
+
+        face_area = max(0.0, (face.bbox[2] - face.bbox[0]) * (face.bbox[3] - face.bbox[1]))
+        if face.crop_jpeg and face_area > best_cluster.get("thumbnail_area", 0):
+            best_cluster["thumbnail_jpeg"] = face.crop_jpeg
+            best_cluster["thumbnail_area"] = face_area
 
         best_cluster["count"] += 1
         best_cluster["centroid"] = best_cluster["centroid"] + (
@@ -162,15 +171,28 @@ def _cluster_unknown_faces(
             )
         )
 
-    discovered = [
-        {
+    discovered = []
+    if unknown_face_dir:
+        os.makedirs(unknown_face_dir, exist_ok=True)
+
+    for index, cluster in enumerate(clusters):
+        thumbnail_path = None
+        thumbnail_jpeg = cluster.get("thumbnail_jpeg")
+        if unknown_face_dir and thumbnail_jpeg:
+            thumbnail_path = os.path.join(unknown_face_dir, f"unknown-{index + 1}.jpg")
+            with open(thumbnail_path, "wb") as file:
+                file.write(thumbnail_jpeg)
+
+        person = {
             "target_index": cluster["target_index"],
             "label": f"Unknown person {index + 1}",
             "known": False,
             "frames_matched": cluster["count"],
         }
-        for index, cluster in enumerate(clusters)
-    ]
+        if thumbnail_path:
+            person["thumbnail_path"] = thumbnail_path
+        discovered.append(person)
+
     return matches, discovered
 
 
@@ -197,6 +219,7 @@ def run_detection(
     verify_max_tokens: int = DEFAULT_VERIFY_MAX_TOKENS,
     discover_people: bool = False,
     unknown_similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    unknown_face_dir: str | None = None,
     progress: bool = True,
 ) -> dict:
     """
@@ -316,6 +339,7 @@ def run_detection(
             faces=unknown_faces,
             start_target_index=len(target_embeddings),
             threshold=unknown_similarity_threshold,
+            unknown_face_dir=unknown_face_dir,
         )
         all_matches = known_matches + unknown_matches
         discovery.update(

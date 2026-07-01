@@ -29,6 +29,7 @@ class FrameFace:
     timestamp_sec: float
     embedding: np.ndarray
     bbox: list[float]
+    crop_jpeg: bytes | None
     chunk_id: int
     best_target_index: int | None
     best_similarity: float | None

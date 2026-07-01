@@ -42,6 +42,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
+import boto3
 import psycopg2
 import psycopg2.extras
 import runpod
@@ -82,6 +83,8 @@ RDS_DB = os.getenv("RDS_DB", "postgres")
 RDS_USER = os.getenv("RDS_USER", "photo_worker")
 RDS_PASSWORD = os.getenv("RDS_PASSWORD")
 RDS_SSLMODE = os.getenv("RDS_SSLMODE", "require")
+S3_BUCKET = os.getenv("S3_BUCKET") or os.getenv("AWS_S3_BUCKET")
+S3_REGION = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
 
 _METADATA_KEYS = {
     "video_id",
@@ -266,6 +269,71 @@ def _metadata(inp: dict, job: dict) -> dict:
         "runpod_endpoint_id": _text_or_none(inp.get("runpod_endpoint_id") or inp.get("runpodEndpointId")),
         "runpod_job_id": _text_or_none(inp.get("runpod_job_id") or inp.get("runpodJobId") or job.get("id")),
     }
+
+
+def _album_faces_prefix(meta: dict) -> str | None:
+    album_slug = meta.get("storage_album_slug")
+    if not album_slug:
+        original_key = meta.get("original_s3_key") or ""
+        parts = original_key.split("/")
+        if len(parts) >= 2 and parts[0] == "albums":
+            album_slug = parts[1]
+    if not album_slug:
+        return None
+    return f"albums/{album_slug}/faces"
+
+
+def _publish_unknown_face_thumbnails(result: dict, inp: dict, job: dict) -> None:
+    people = result.get("discovered_people")
+    if not isinstance(people, list):
+        return
+
+    discovery = result.setdefault("discovery", {})
+    if not S3_BUCKET:
+        discovery["unknown_thumbnail_uploads"] = 0
+        discovery["unknown_thumbnail_upload_error"] = "S3_BUCKET is not configured"
+        for person in people:
+            if isinstance(person, dict):
+                person.pop("thumbnail_path", None)
+        return
+
+    meta = _metadata(inp, job)
+    video_id = meta.get("video_id") or str(uuid.uuid4())
+    faces_prefix = _album_faces_prefix(meta)
+    if not faces_prefix:
+        discovery["unknown_thumbnail_uploads"] = 0
+        discovery["unknown_thumbnail_upload_error"] = "storage_album_slug is not configured"
+        for person in people:
+            if isinstance(person, dict):
+                person.pop("thumbnail_path", None)
+        return
+
+    s3 = boto3.client("s3", region_name=S3_REGION)
+    uploaded = 0
+    for index, person in enumerate(people):
+        if not isinstance(person, dict):
+            continue
+        thumbnail_path = person.pop("thumbnail_path", None)
+        if not thumbnail_path or not os.path.exists(thumbnail_path):
+            continue
+        key = f"{faces_prefix}/video-unknowns/{video_id}/unknown-{index + 1}.jpg"
+        try:
+            s3.upload_file(
+                thumbnail_path,
+                S3_BUCKET,
+                key,
+                ExtraArgs={
+                    "ContentType": "image/jpeg",
+                    "CacheControl": "public, max-age=31536000, immutable",
+                },
+            )
+        except Exception as exc:
+            discovery["unknown_thumbnail_upload_error"] = str(exc)
+            continue
+        person["thumbnail_s3_key"] = key
+        uploaded += 1
+
+    discovery["unknown_thumbnail_uploads"] = uploaded
 
 
 def _mark_video_processing(inp: dict, job: dict) -> str | None:
@@ -559,6 +627,7 @@ def handler(job: dict) -> dict:
         video_id = _mark_video_processing(inp, job)
         with tempfile.TemporaryDirectory() as tmp_dir:
             video, targets = _resolve_inputs(inp, tmp_dir)
+            unknown_face_dir = os.path.join(tmp_dir, "unknown-faces")
             result = run_detection(
                 video=video,
                 targets=targets,
@@ -584,8 +653,10 @@ def handler(job: dict) -> dict:
                 unknown_similarity_threshold=float(
                     inp.get("unknown_similarity_threshold", inp.get("unknownSimilarityThreshold", DEFAULT_SIMILARITY_THRESHOLD))
                 ),
+                unknown_face_dir=unknown_face_dir,
                 progress=False,
             )
+            _publish_unknown_face_thumbnails(result, inp, job)
             if video_id:
                 _store_detection_result(video_id, inp, job, result)
                 result["video_id"] = video_id
