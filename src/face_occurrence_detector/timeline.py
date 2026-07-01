@@ -4,12 +4,12 @@ from .types import FrameMatch, TimelineInterval
 def deduplicate_matches(matches: list[FrameMatch]) -> list[FrameMatch]:
     """
     Remove duplicate timestamps that arise from overlapping chunk windows.
-    When the same timestamp appears in multiple chunks, keep the detection
-    with the highest similarity score.
+    When the same timestamp and target appear in multiple chunks, keep the
+    detection with the highest similarity score.
     """
-    best: dict[float, FrameMatch] = {}
+    best: dict[tuple[float, int], FrameMatch] = {}
     for match in matches:
-        key = round(match.timestamp_sec, 3)
+        key = (round(match.timestamp_sec, 3), match.target_index)
         if key not in best or match.similarity > best[key].similarity:
             best[key] = match
     return list(best.values())
@@ -34,11 +34,12 @@ def merge_matches_into_intervals(
         return []
 
     matches = deduplicate_matches(matches)
-    matches = sorted(matches, key=lambda m: m.timestamp_sec)
+    matches = sorted(matches, key=lambda m: (m.target_index, m.timestamp_sec))
 
     frame_duration = 1.0 / fps
 
     intervals: list[TimelineInterval] = []
+    current_target_index = matches[0].target_index
     current_start = matches[0].timestamp_sec
     current_end = matches[0].timestamp_sec + frame_duration
     current_sims = [matches[0].similarity]
@@ -46,7 +47,7 @@ def merge_matches_into_intervals(
     for match in matches[1:]:
         frame_end = match.timestamp_sec + frame_duration
 
-        if match.timestamp_sec - current_end <= merge_gap_sec:
+        if match.target_index == current_target_index and match.timestamp_sec - current_end <= merge_gap_sec:
             # Extend current interval
             current_end = max(current_end, frame_end)
             current_sims.append(match.similarity)
@@ -57,12 +58,14 @@ def merge_matches_into_intervals(
                     TimelineInterval(
                         start_sec=current_start,
                         end_sec=current_end,
+                        target_index=current_target_index,
                         max_similarity=max(current_sims),
                         avg_similarity=sum(current_sims) / len(current_sims),
                         frames_matched=len(current_sims),
                     )
                 )
             # Begin a new interval
+            current_target_index = match.target_index
             current_start = match.timestamp_sec
             current_end = frame_end
             current_sims = [match.similarity]
@@ -73,10 +76,11 @@ def merge_matches_into_intervals(
             TimelineInterval(
                 start_sec=current_start,
                 end_sec=current_end,
+                target_index=current_target_index,
                 max_similarity=max(current_sims),
                 avg_similarity=sum(current_sims) / len(current_sims),
                 frames_matched=len(current_sims),
             )
         )
 
-    return intervals
+    return sorted(intervals, key=lambda interval: interval.start_sec)

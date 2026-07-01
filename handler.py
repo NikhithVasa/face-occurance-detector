@@ -108,6 +108,10 @@ _METADATA_KEYS = {
     "storageEventSlug",
     "target_s3_keys",
     "targetS3Keys",
+    "target_person_ids",
+    "targetPersonIds",
+    "selected_person_ids",
+    "selectedPersonIds",
     "runpod_endpoint_id",
     "runpodEndpointId",
 }
@@ -192,6 +196,20 @@ def _target_s3_keys(inp: dict) -> list[str] | None:
     return None
 
 
+def _selected_person_ids(inp: dict) -> list[str]:
+    value = inp.get("selected_person_ids") or inp.get("selectedPersonIds")
+    if not isinstance(value, list):
+        return []
+    return [_uuid_or_none(item) for item in value if item]
+
+
+def _target_person_ids(inp: dict) -> list[str | None]:
+    value = inp.get("target_person_ids") or inp.get("targetPersonIds")
+    if not isinstance(value, list):
+        return []
+    return [_uuid_or_none(item) if item else None for item in value]
+
+
 def _detection_params(inp: dict) -> dict:
     return {
         "fps": float(inp.get("fps", DEFAULT_FPS)),
@@ -202,6 +220,8 @@ def _detection_params(inp: dict) -> dict:
         "min_interval_sec": float(inp.get("min_interval_sec", DEFAULT_MIN_INTERVAL_SEC)),
         "verify_model": inp.get("verify_model"),
         "verify_max_tokens": int(inp.get("verify_max_tokens", DEFAULT_VERIFY_MAX_TOKENS)),
+        "selected_person_ids": _selected_person_ids(inp),
+        "target_person_ids": _target_person_ids(inp),
     }
 
 
@@ -343,6 +363,24 @@ def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -
     meta = _metadata(inp, job)
     params = _detection_params(inp)
     matches = result.get("matches") or []
+    target_s3_keys = meta["target_s3_keys"] or []
+    target_person_ids = _target_person_ids(inp)
+
+    def target_index_for(match: dict) -> int | None:
+        value = match.get("target_index")
+        return int(value) if isinstance(value, int) else None
+
+    def target_s3_key_for(match: dict) -> str | None:
+        target_index = target_index_for(match)
+        if target_index is None or target_index < 0 or target_index >= len(target_s3_keys):
+            return None
+        return target_s3_keys[target_index]
+
+    def person_id_for(match: dict) -> str | None:
+        target_index = target_index_for(match)
+        if target_index is not None and 0 <= target_index < len(target_person_ids):
+            return target_person_ids[target_index]
+        return meta["target_person_id"]
 
     with _db_connect() as conn:
         with conn.cursor() as cur:
@@ -384,6 +422,8 @@ def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -
                   album_id,
                   album_event_id,
                   person_id,
+                  target_index,
+                  target_s3_key,
                   start_sec,
                   end_sec,
                   start_time,
@@ -393,14 +433,16 @@ def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -
                   frames_matched,
                   verified
                 )
-                VALUES(%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s)
+                                VALUES(%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
                         video_id,
                         meta["album_id"],
                         meta["album_event_id"],
-                        meta["target_person_id"],
+                                                person_id_for(match),
+                                                target_index_for(match),
+                                                target_s3_key_for(match),
                         match.get("start_sec"),
                         match.get("end_sec"),
                         match.get("start_time"),

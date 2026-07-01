@@ -33,6 +33,7 @@ def build_output_dict(
             {
                 "start_sec": round(interval.start_sec, 2),
                 "end_sec": round(interval.end_sec, 2),
+                "target_index": interval.target_index,
                 "start_time": format_seconds(interval.start_sec),
                 "end_time": format_seconds(interval.end_sec),
                 "max_similarity": round(interval.max_similarity, 4),

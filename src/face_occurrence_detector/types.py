@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 @dataclass
 class TargetEmbedding:
     source_path: str
+    target_index: int
     embedding: np.ndarray
     face_bbox: list[float]
 
@@ -18,6 +19,7 @@ class TargetEmbedding:
 class FrameMatch:
     timestamp_sec: float
     similarity: float
+    target_index: int
     bbox: list[float]
     chunk_id: int
 
@@ -26,6 +28,7 @@ class FrameMatch:
 class TimelineInterval:
     start_sec: float
     end_sec: float
+    target_index: int | None
     max_similarity: float
     avg_similarity: float
     frames_matched: int

@@ -65,7 +65,7 @@ class InsightFaceMatcher:
 
         embeddings: list[TargetEmbedding] = []
 
-        for path in target_paths:
+        for target_index, path in enumerate(target_paths):
             image = cv2.imread(path)
             if image is None:
                 raise ValueError(f"Could not read reference image: {path}")
@@ -83,6 +83,7 @@ class InsightFaceMatcher:
             embeddings.append(
                 TargetEmbedding(
                     source_path=path,
+                    target_index=target_index,
                     embedding=face.normed_embedding,
                     face_bbox=face.bbox.tolist(),
                 )
@@ -116,18 +117,18 @@ class InsightFaceMatcher:
         for face in faces:
             embedding: np.ndarray = face.normed_embedding
             # Cosine similarity: normed_embedding dot normed_target = cos(θ)
-            score = float(
-                max(
-                    float(np.dot(embedding, te.embedding))
-                    for te in target_embeddings
-                )
+            best_target = max(
+                target_embeddings,
+                key=lambda target: float(np.dot(embedding, target.embedding)),
             )
+            score = float(np.dot(embedding, best_target.embedding))
 
             if score >= threshold:
                 matches.append(
                     FrameMatch(
                         timestamp_sec=timestamp_sec,
                         similarity=score,
+                        target_index=best_target.target_index,
                         bbox=face.bbox.tolist(),
                         chunk_id=chunk_id,
                     )
