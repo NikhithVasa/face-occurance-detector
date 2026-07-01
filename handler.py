@@ -359,6 +359,20 @@ def _mark_video_processing(inp: dict, job: dict) -> str | None:
             return str(row["id"])
 
 
+def _has_video_match_target_columns(cur) -> bool:
+    cur.execute(
+        """
+        SELECT COUNT(*) = 2 AS has_columns
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'video_face_matches'
+          AND column_name IN ('target_index', 'target_s3_key')
+        """
+    )
+    row = cur.fetchone()
+    return bool(row and row["has_columns"])
+
+
 def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -> None:
     meta = _metadata(inp, job)
     params = _detection_params(inp)
@@ -384,6 +398,7 @@ def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -
 
     with _db_connect() as conn:
         with conn.cursor() as cur:
+            has_target_columns = _has_video_match_target_columns(cur)
             cur.execute(
                 """
                 UPDATE videos
@@ -414,47 +429,86 @@ def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -
                 ],
             )
             cur.execute("DELETE FROM video_face_matches WHERE video_id = %s::uuid", [video_id])
-            psycopg2.extras.execute_batch(
-                cur,
-                """
-                INSERT INTO video_face_matches(
-                  video_id,
-                  album_id,
-                  album_event_id,
-                  person_id,
-                  target_index,
-                  target_s3_key,
-                  start_sec,
-                  end_sec,
-                  start_time,
-                  end_time,
-                  max_similarity,
-                  avg_similarity,
-                  frames_matched,
-                  verified
-                )
-                                VALUES(%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                [
-                    (
-                        video_id,
-                        meta["album_id"],
-                        meta["album_event_id"],
-                                                person_id_for(match),
-                                                target_index_for(match),
-                                                target_s3_key_for(match),
-                        match.get("start_sec"),
-                        match.get("end_sec"),
-                        match.get("start_time"),
-                        match.get("end_time"),
-                        match.get("max_similarity"),
-                        match.get("avg_similarity"),
-                        match.get("frames_matched"),
-                        match.get("verified"),
+            if has_target_columns:
+                psycopg2.extras.execute_batch(
+                    cur,
+                    """
+                    INSERT INTO video_face_matches(
+                      video_id,
+                      album_id,
+                      album_event_id,
+                      person_id,
+                      target_index,
+                      target_s3_key,
+                      start_sec,
+                      end_sec,
+                      start_time,
+                      end_time,
+                      max_similarity,
+                      avg_similarity,
+                      frames_matched,
+                      verified
                     )
-                    for match in matches
-                ],
-            )
+                    VALUES(%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    [
+                        (
+                            video_id,
+                            meta["album_id"],
+                            meta["album_event_id"],
+                            person_id_for(match),
+                            target_index_for(match),
+                            target_s3_key_for(match),
+                            match.get("start_sec"),
+                            match.get("end_sec"),
+                            match.get("start_time"),
+                            match.get("end_time"),
+                            match.get("max_similarity"),
+                            match.get("avg_similarity"),
+                            match.get("frames_matched"),
+                            match.get("verified"),
+                        )
+                        for match in matches
+                    ],
+                )
+            else:
+                psycopg2.extras.execute_batch(
+                    cur,
+                    """
+                    INSERT INTO video_face_matches(
+                      video_id,
+                      album_id,
+                      album_event_id,
+                      person_id,
+                      start_sec,
+                      end_sec,
+                      start_time,
+                      end_time,
+                      max_similarity,
+                      avg_similarity,
+                      frames_matched,
+                      verified
+                    )
+                    VALUES(%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    [
+                        (
+                            video_id,
+                            meta["album_id"],
+                            meta["album_event_id"],
+                            person_id_for(match),
+                            match.get("start_sec"),
+                            match.get("end_sec"),
+                            match.get("start_time"),
+                            match.get("end_time"),
+                            match.get("max_similarity"),
+                            match.get("avg_similarity"),
+                            match.get("frames_matched"),
+                            match.get("verified"),
+                        )
+                        for match in matches
+                    ],
+                )
 
 
 def _mark_video_failed(video_id: str | None, error: str) -> None:
