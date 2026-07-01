@@ -146,8 +146,7 @@ def _resolve_inputs(inp: dict, tmp_dir: str) -> tuple[str, list[str]]:
     targets = inp.get("target_paths")
     if not targets:
         target_urls = inp.get("target_urls")
-        discover_people = inp.get("discover_people") is True or inp.get("discoverPeople") is True
-        if not target_urls and not discover_people:
+        if not target_urls and not _discover_people(inp):
             raise ValueError("Provide either 'target_paths' or 'target_urls'.")
         targets = [_download(url, tmp_dir) for url in target_urls]
 
@@ -190,6 +189,25 @@ def _json_value(value):
     return psycopg2.extras.Json(value if value is not None else {})
 
 
+def _bool_input(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _discover_people(inp: dict) -> bool:
+    for key in ("discover_people", "discoverPeople", "include_unknown_people", "includeUnknownPeople"):
+        if key in inp:
+            return _bool_input(inp.get(key), default=True)
+    return True
+
+
 def _target_s3_keys(inp: dict) -> list[str] | None:
     value = inp.get("target_s3_keys") or inp.get("targetS3Keys")
     if isinstance(value, list):
@@ -223,7 +241,7 @@ def _detection_params(inp: dict) -> dict:
         "verify_max_tokens": int(inp.get("verify_max_tokens", DEFAULT_VERIFY_MAX_TOKENS)),
         "selected_person_ids": _selected_person_ids(inp),
         "target_person_ids": _target_person_ids(inp),
-        "discover_people": inp.get("discover_people") is True or inp.get("discoverPeople") is True,
+        "discover_people": _discover_people(inp),
     }
 
 
@@ -562,7 +580,7 @@ def handler(job: dict) -> dict:
                 verify_max_tokens=int(
                     inp.get("verify_max_tokens", DEFAULT_VERIFY_MAX_TOKENS)
                 ),
-                discover_people=inp.get("discover_people") is True or inp.get("discoverPeople") is True,
+                discover_people=_discover_people(inp),
                 unknown_similarity_threshold=float(
                     inp.get("unknown_similarity_threshold", inp.get("unknownSimilarityThreshold", DEFAULT_SIMILARITY_THRESHOLD))
                 ),

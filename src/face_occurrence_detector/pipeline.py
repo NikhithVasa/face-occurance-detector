@@ -248,6 +248,15 @@ def run_detection(
     # 5. Process chunks (sequential or parallel).
     all_matches: list[FrameMatch] = []
     discovered_people: list[dict] = []
+    discovery = {
+        "enabled": discover_people,
+        "detected_faces": None,
+        "known_frame_matches": None,
+        "unknown_face_detections": None,
+        "unknown_frame_matches": None,
+        "unknown_clusters": None,
+        "unknown_similarity_threshold": unknown_similarity_threshold,
+    }
 
     if discover_people:
         all_faces: list[FrameFace] = []
@@ -309,6 +318,15 @@ def run_detection(
             threshold=unknown_similarity_threshold,
         )
         all_matches = known_matches + unknown_matches
+        discovery.update(
+            {
+                "detected_faces": len(all_faces),
+                "known_frame_matches": len(known_matches),
+                "unknown_face_detections": len(unknown_faces),
+                "unknown_frame_matches": len(unknown_matches),
+                "unknown_clusters": len(discovered_people),
+            }
+        )
         log(
             f"  Raw detected faces: {len(all_faces)} "
             f"({len(known_matches)} known, {len(unknown_matches)} unknown-clustered)."
@@ -393,6 +411,7 @@ def run_detection(
         duration_sec=duration_sec,
         intervals=intervals,
         discovered_people=discovered_people,
+        discovery=discovery,
     )
 
     if output:

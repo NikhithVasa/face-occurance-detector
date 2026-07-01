@@ -22,6 +22,7 @@ def build_output_dict(
     duration_sec: float,
     intervals: list[TimelineInterval],
     discovered_people: list[dict] | None = None,
+    discovery: dict | None = None,
 ) -> dict:
     return {
         "video": os.path.basename(video_path),
@@ -30,6 +31,7 @@ def build_output_dict(
         "similarity_threshold": similarity_threshold,
         "target_count": target_count,
         "discovered_people": discovered_people or [],
+        "discovery": discovery or {},
         "duration_sec": round(duration_sec, 2),
         "matches": [
             {
