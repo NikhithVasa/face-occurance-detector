@@ -25,6 +25,16 @@ class FrameMatch:
 
 
 @dataclass
+class FrameFace:
+    timestamp_sec: float
+    embedding: np.ndarray
+    bbox: list[float]
+    chunk_id: int
+    best_target_index: int | None
+    best_similarity: float | None
+
+
+@dataclass
 class TimelineInterval:
     start_sec: float
     end_sec: float

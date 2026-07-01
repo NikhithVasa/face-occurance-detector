@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .config import DEFAULT_MODEL_NAME, DEFAULT_CTX_ID, DEFAULT_DET_SIZE, DEFAULT_PROVIDERS
-from .types import TargetEmbedding, FrameMatch
+from .types import TargetEmbedding, FrameFace, FrameMatch
 
 if TYPE_CHECKING:
     import numpy as np
@@ -106,32 +106,68 @@ class InsightFaceMatcher:
         Uses max-over-targets scoring so that multiple reference images (front, side,
         angled) all contribute to the match decision.
         """
-        import numpy as np
-
-        faces = self.app.get(frame)
-        if not faces:
-            return []
-
         matches: list[FrameMatch] = []
 
-        for face in faces:
-            embedding: np.ndarray = face.normed_embedding
-            # Cosine similarity: normed_embedding dot normed_target = cos(θ)
-            best_target = max(
-                target_embeddings,
-                key=lambda target: float(np.dot(embedding, target.embedding)),
-            )
-            score = float(np.dot(embedding, best_target.embedding))
+        for detected_face in self.detect_frame_faces(
+            frame=frame,
+            timestamp_sec=timestamp_sec,
+            target_embeddings=target_embeddings,
+            chunk_id=chunk_id,
+        ):
+            if detected_face.best_target_index is None or detected_face.best_similarity is None:
+                continue
+            score = detected_face.best_similarity
 
             if score >= threshold:
                 matches.append(
                     FrameMatch(
                         timestamp_sec=timestamp_sec,
                         similarity=score,
-                        target_index=best_target.target_index,
-                        bbox=face.bbox.tolist(),
+                        target_index=detected_face.best_target_index,
+                        bbox=detected_face.bbox,
                         chunk_id=chunk_id,
                     )
                 )
 
         return matches
+
+    def detect_frame_faces(
+        self,
+        frame: np.ndarray,
+        timestamp_sec: float,
+        target_embeddings: list[TargetEmbedding],
+        chunk_id: int,
+    ) -> list[FrameFace]:
+        """Detect all faces in a frame and optionally score each against targets."""
+        import numpy as np
+
+        faces = self.app.get(frame)
+        if not faces:
+            return []
+
+        detected: list[FrameFace] = []
+        for face in faces:
+            embedding: np.ndarray = face.normed_embedding
+            best_target_index: int | None = None
+            best_similarity: float | None = None
+
+            if target_embeddings:
+                best_target = max(
+                    target_embeddings,
+                    key=lambda target: float(np.dot(embedding, target.embedding)),
+                )
+                best_target_index = best_target.target_index
+                best_similarity = float(np.dot(embedding, best_target.embedding))
+
+            detected.append(
+                FrameFace(
+                    timestamp_sec=timestamp_sec,
+                    embedding=embedding,
+                    bbox=face.bbox.tolist(),
+                    chunk_id=chunk_id,
+                    best_target_index=best_target_index,
+                    best_similarity=best_similarity,
+                )
+            )
+
+        return detected

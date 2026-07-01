@@ -30,7 +30,7 @@ from .config import (
 from .insightface_matcher import InsightFaceMatcher
 from .output import build_output_dict, write_output_json
 from .timeline import merge_matches_into_intervals
-from .types import FrameMatch, TargetEmbedding
+from .types import FrameFace, FrameMatch, TargetEmbedding
 from .verification import verify_intervals
 from .video_reader import get_video_duration, sample_frames
 
@@ -76,6 +76,104 @@ def _process_chunk(
     return matches
 
 
+def _process_chunk_faces(
+    video_path: str,
+    chunk_id: int,
+    start_sec: float,
+    end_sec: float,
+    fps: float,
+    matcher: InsightFaceMatcher,
+    target_embeddings: list[TargetEmbedding],
+    progress: bool,
+) -> list[FrameFace]:
+    """Sample one chunk and return every detected face with target scores."""
+    faces: list[FrameFace] = []
+
+    frames = sample_frames(video_path, start_sec, end_sec, fps)
+    if progress:
+        from tqdm import tqdm
+
+        estimated = max(1, int((end_sec - start_sec) * fps))
+        frames = tqdm(
+            frames,
+            total=estimated,
+            desc=f"Chunk {chunk_id + 1}",
+            unit="frame",
+            leave=False,
+        )
+
+    for timestamp_sec, frame in frames:
+        faces.extend(
+            matcher.detect_frame_faces(
+                frame=frame,
+                timestamp_sec=timestamp_sec,
+                target_embeddings=target_embeddings,
+                chunk_id=chunk_id,
+            )
+        )
+
+    return faces
+
+
+def _cluster_unknown_faces(
+    faces: list[FrameFace],
+    start_target_index: int,
+    threshold: float,
+) -> tuple[list[FrameMatch], list[dict]]:
+    import numpy as np
+
+    clusters: list[dict] = []
+    matches: list[FrameMatch] = []
+
+    for face in sorted(faces, key=lambda item: item.timestamp_sec):
+        best_cluster: dict | None = None
+        best_score = -1.0
+        for cluster in clusters:
+            score = float(np.dot(face.embedding, cluster["centroid"]))
+            if score > best_score:
+                best_score = score
+                best_cluster = cluster
+
+        if best_cluster is None or best_score < threshold:
+            target_index = start_target_index + len(clusters)
+            best_cluster = {
+                "target_index": target_index,
+                "centroid": face.embedding.copy(),
+                "count": 0,
+            }
+            clusters.append(best_cluster)
+            best_score = 1.0
+
+        best_cluster["count"] += 1
+        best_cluster["centroid"] = best_cluster["centroid"] + (
+            face.embedding - best_cluster["centroid"]
+        ) / best_cluster["count"]
+        norm = np.linalg.norm(best_cluster["centroid"])
+        if norm > 0:
+            best_cluster["centroid"] = best_cluster["centroid"] / norm
+
+        matches.append(
+            FrameMatch(
+                timestamp_sec=face.timestamp_sec,
+                similarity=best_score,
+                target_index=best_cluster["target_index"],
+                bbox=face.bbox,
+                chunk_id=face.chunk_id,
+            )
+        )
+
+    discovered = [
+        {
+            "target_index": cluster["target_index"],
+            "label": f"Unknown person {index + 1}",
+            "known": False,
+            "frames_matched": cluster["count"],
+        }
+        for index, cluster in enumerate(clusters)
+    ]
+    return matches, discovered
+
+
 def run_detection(
     *,
     video: str,
@@ -97,6 +195,8 @@ def run_detection(
     verify_prompt: str = DEFAULT_VERIFY_PROMPT,
     verify_model: str | None = None,
     verify_max_tokens: int = DEFAULT_VERIFY_MAX_TOKENS,
+    discover_people: bool = False,
+    unknown_similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     progress: bool = True,
 ) -> dict:
     """
@@ -147,8 +247,73 @@ def run_detection(
 
     # 5. Process chunks (sequential or parallel).
     all_matches: list[FrameMatch] = []
+    discovered_people: list[dict] = []
 
-    if parallel_chunks <= 1:
+    if discover_people:
+        all_faces: list[FrameFace] = []
+        if parallel_chunks <= 1:
+            for chunk_id, (start_sec, end_sec) in enumerate(chunk_windows):
+                all_faces.extend(
+                    _process_chunk_faces(
+                        video_path=video,
+                        chunk_id=chunk_id,
+                        start_sec=start_sec,
+                        end_sec=end_sec,
+                        fps=fps,
+                        matcher=matcher,
+                        target_embeddings=target_embeddings,
+                        progress=progress,
+                    )
+                )
+        else:
+            max_workers = min(parallel_chunks, len(chunk_windows))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        _process_chunk_faces,
+                        video,
+                        chunk_id,
+                        start_sec,
+                        end_sec,
+                        fps,
+                        matcher,
+                        target_embeddings,
+                        progress,
+                    )
+                    for chunk_id, (start_sec, end_sec) in enumerate(chunk_windows)
+                ]
+                for future in as_completed(futures):
+                    all_faces.extend(future.result())
+
+        known_matches = [
+            FrameMatch(
+                timestamp_sec=face.timestamp_sec,
+                similarity=face.best_similarity or 0,
+                target_index=face.best_target_index or 0,
+                bbox=face.bbox,
+                chunk_id=face.chunk_id,
+            )
+            for face in all_faces
+            if face.best_target_index is not None
+            and face.best_similarity is not None
+            and face.best_similarity >= similarity_threshold
+        ]
+        unknown_faces = [
+            face
+            for face in all_faces
+            if face.best_similarity is None or face.best_similarity < similarity_threshold
+        ]
+        unknown_matches, discovered_people = _cluster_unknown_faces(
+            faces=unknown_faces,
+            start_target_index=len(target_embeddings),
+            threshold=unknown_similarity_threshold,
+        )
+        all_matches = known_matches + unknown_matches
+        log(
+            f"  Raw detected faces: {len(all_faces)} "
+            f"({len(known_matches)} known, {len(unknown_matches)} unknown-clustered)."
+        )
+    elif parallel_chunks <= 1:
         for chunk_id, (start_sec, end_sec) in enumerate(chunk_windows):
             all_matches.extend(
                 _process_chunk(
@@ -227,6 +392,7 @@ def run_detection(
         target_count=len(target_embeddings),
         duration_sec=duration_sec,
         intervals=intervals,
+        discovered_people=discovered_people,
     )
 
     if output:

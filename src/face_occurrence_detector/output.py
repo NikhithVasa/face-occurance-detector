@@ -21,6 +21,7 @@ def build_output_dict(
     target_count: int,
     duration_sec: float,
     intervals: list[TimelineInterval],
+    discovered_people: list[dict] | None = None,
 ) -> dict:
     return {
         "video": os.path.basename(video_path),
@@ -28,6 +29,7 @@ def build_output_dict(
         "model": f"insightface/{model_name}",
         "similarity_threshold": similarity_threshold,
         "target_count": target_count,
+        "discovered_people": discovered_people or [],
         "duration_sec": round(duration_sec, 2),
         "matches": [
             {

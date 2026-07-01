@@ -146,7 +146,8 @@ def _resolve_inputs(inp: dict, tmp_dir: str) -> tuple[str, list[str]]:
     targets = inp.get("target_paths")
     if not targets:
         target_urls = inp.get("target_urls")
-        if not target_urls:
+        discover_people = inp.get("discover_people") is True or inp.get("discoverPeople") is True
+        if not target_urls and not discover_people:
             raise ValueError("Provide either 'target_paths' or 'target_urls'.")
         targets = [_download(url, tmp_dir) for url in target_urls]
 
@@ -222,6 +223,7 @@ def _detection_params(inp: dict) -> dict:
         "verify_max_tokens": int(inp.get("verify_max_tokens", DEFAULT_VERIFY_MAX_TOKENS)),
         "selected_person_ids": _selected_person_ids(inp),
         "target_person_ids": _target_person_ids(inp),
+        "discover_people": inp.get("discover_people") is True or inp.get("discoverPeople") is True,
     }
 
 
@@ -394,6 +396,8 @@ def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -
         target_index = target_index_for(match)
         if target_index is not None and 0 <= target_index < len(target_person_ids):
             return target_person_ids[target_index]
+        if target_index is not None:
+            return None
         return meta["target_person_id"]
 
     with _db_connect() as conn:
@@ -557,6 +561,10 @@ def handler(job: dict) -> dict:
                 verify_model=inp.get("verify_model"),
                 verify_max_tokens=int(
                     inp.get("verify_max_tokens", DEFAULT_VERIFY_MAX_TOKENS)
+                ),
+                discover_people=inp.get("discover_people") is True or inp.get("discoverPeople") is True,
+                unknown_similarity_threshold=float(
+                    inp.get("unknown_similarity_threshold", inp.get("unknownSimilarityThreshold", DEFAULT_SIMILARITY_THRESHOLD))
                 ),
                 progress=False,
             )
