@@ -148,7 +148,7 @@ def _resolve_inputs(inp: dict, tmp_dir: str) -> tuple[str, list[str]]:
 
     targets = inp.get("target_paths")
     if not targets:
-        target_urls = inp.get("target_urls")
+        target_urls = inp.get("target_urls") or []
         if not target_urls and not _discover_people(inp):
             raise ValueError("Provide either 'target_paths' or 'target_urls'.")
         targets = [_download(url, tmp_dir) for url in target_urls]
@@ -204,11 +204,26 @@ def _bool_input(value, default: bool = False) -> bool:
     return default
 
 
+def _has_input_values(value) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(_has_input_values(item) for item in value)
+    return value is not None
+
+
+def _has_target_inputs(inp: dict) -> bool:
+    return any(
+        _has_input_values(inp.get(key))
+        for key in ("target_paths", "target_urls", "target_s3_keys", "targetS3Keys")
+    )
+
+
 def _discover_people(inp: dict) -> bool:
     for key in ("discover_people", "discoverPeople", "include_unknown_people", "includeUnknownPeople"):
         if key in inp:
             return _bool_input(inp.get(key), default=True)
-    return True
+    return not _has_target_inputs(inp)
 
 
 def _target_s3_keys(inp: dict) -> list[str] | None:
