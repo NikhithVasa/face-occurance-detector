@@ -17,7 +17,17 @@ Job input schema (``job["input"]``):
       "parallel_chunks": 2,
       "similarity_threshold": 0.55,
       "merge_gap_sec": 1.5,
-      "min_interval_sec": 1.0
+            "min_interval_sec": 1.0,
+
+            "video_id": "optional-existing-videos-row-uuid",
+            "album_id": "album uuid",
+            "album_event_id": "event uuid",
+            "customer_id": "optional customer uuid",
+            "target_person_id": "optional people.id uuid",
+            "file_name": "videoplayback.mp4",
+            "original_s3_key": "albums/.../videos/videoplayback.mp4",
+            "storage_album_slug": "album-slug",
+            "storage_event_slug": "event-slug"
     }
 
 Provide either the ``*_path`` form (files on a mounted network volume) or the
@@ -30,7 +40,10 @@ import os
 import tempfile
 import urllib.parse
 import urllib.request
+import uuid
 
+import psycopg2
+import psycopg2.extras
 import runpod
 
 from face_occurrence_detector.config import (
@@ -62,6 +75,42 @@ _matcher = InsightFaceMatcher(
     det_size=(_DET_SIZE, _DET_SIZE),
 )
 print(f"Worker ready. ONNX Runtime providers: {', '.join(_matcher.providers)}")
+
+RDS_HOST = os.getenv("RDS_HOST", "photo-gallery-postgres-dev.c7o2u4ouqyim.us-east-1.rds.amazonaws.com")
+RDS_PORT = int(os.getenv("RDS_PORT", "5432"))
+RDS_DB = os.getenv("RDS_DB", "postgres")
+RDS_USER = os.getenv("RDS_USER", "photo_worker")
+RDS_PASSWORD = os.getenv("RDS_PASSWORD")
+RDS_SSLMODE = os.getenv("RDS_SSLMODE", "require")
+
+_METADATA_KEYS = {
+    "video_id",
+    "videoId",
+    "album_id",
+    "albumId",
+    "album_event_id",
+    "albumEventId",
+    "event_id",
+    "eventId",
+    "customer_id",
+    "customerId",
+    "target_person_id",
+    "targetPersonId",
+    "person_id",
+    "personId",
+    "file_name",
+    "fileName",
+    "original_s3_key",
+    "originalS3Key",
+    "storage_album_slug",
+    "storageAlbumSlug",
+    "storage_event_slug",
+    "storageEventSlug",
+    "target_s3_keys",
+    "targetS3Keys",
+    "runpod_endpoint_id",
+    "runpodEndpointId",
+}
 
 
 def _download(url: str, dest_dir: str) -> str:
@@ -103,13 +152,296 @@ def _resolve_inputs(inp: dict, tmp_dir: str) -> tuple[str, list[str]]:
     return video, targets
 
 
+def _db_connect():
+    if not RDS_PASSWORD:
+        raise RuntimeError("RDS_PASSWORD is required to store video detection results.")
+    return psycopg2.connect(
+        host=RDS_HOST,
+        port=RDS_PORT,
+        dbname=RDS_DB,
+        user=RDS_USER,
+        password=RDS_PASSWORD,
+        sslmode=RDS_SSLMODE,
+        cursor_factory=psycopg2.extras.RealDictCursor,
+        application_name=os.getenv("DB_APPLICATION_NAME", "face_occurrence_worker"),
+        connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
+    )
+
+
+def _uuid_or_none(value) -> str | None:
+    if not value:
+        return None
+    return str(uuid.UUID(str(value)))
+
+
+def _text_or_none(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _json_value(value):
+    return psycopg2.extras.Json(value if value is not None else {})
+
+
+def _target_s3_keys(inp: dict) -> list[str] | None:
+    value = inp.get("target_s3_keys") or inp.get("targetS3Keys")
+    if isinstance(value, list):
+        return [str(item) for item in value if item]
+    return None
+
+
+def _detection_params(inp: dict) -> dict:
+    return {
+        "fps": float(inp.get("fps", DEFAULT_FPS)),
+        "chunks": int(inp.get("chunks", DEFAULT_CHUNKS)),
+        "parallel_chunks": int(inp.get("parallel_chunks", DEFAULT_PARALLEL_CHUNKS)),
+        "similarity_threshold": float(inp.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD)),
+        "merge_gap_sec": float(inp.get("merge_gap_sec", DEFAULT_MERGE_GAP_SEC)),
+        "min_interval_sec": float(inp.get("min_interval_sec", DEFAULT_MIN_INTERVAL_SEC)),
+        "verify_model": inp.get("verify_model"),
+        "verify_max_tokens": int(inp.get("verify_max_tokens", DEFAULT_VERIFY_MAX_TOKENS)),
+    }
+
+
+def _should_persist(inp: dict) -> bool:
+    if inp.get("persist_results") is True:
+        return True
+    return any(inp.get(key) for key in _METADATA_KEYS)
+
+
+def _metadata(inp: dict, job: dict) -> dict:
+    return {
+        "video_id": _uuid_or_none(inp.get("video_id") or inp.get("videoId")),
+        "album_id": _uuid_or_none(inp.get("album_id") or inp.get("albumId")),
+        "album_event_id": _uuid_or_none(inp.get("album_event_id") or inp.get("event_id") or inp.get("albumEventId") or inp.get("eventId")),
+        "customer_id": _uuid_or_none(inp.get("customer_id") or inp.get("customerId")),
+        "target_person_id": _uuid_or_none(inp.get("target_person_id") or inp.get("person_id") or inp.get("targetPersonId") or inp.get("personId")),
+        "file_name": _text_or_none(inp.get("file_name") or inp.get("fileName")) or os.path.basename(urllib.parse.urlparse(str(inp.get("video_url") or "")).path),
+        "original_s3_key": _text_or_none(inp.get("original_s3_key") or inp.get("originalS3Key")),
+        "storage_album_slug": _text_or_none(inp.get("storage_album_slug") or inp.get("album_slug") or inp.get("storageAlbumSlug") or inp.get("albumSlug")),
+        "storage_event_slug": _text_or_none(inp.get("storage_event_slug") or inp.get("event_slug") or inp.get("storageEventSlug") or inp.get("eventSlug")),
+        "target_s3_keys": _target_s3_keys(inp),
+        "runpod_endpoint_id": _text_or_none(inp.get("runpod_endpoint_id") or inp.get("runpodEndpointId")),
+        "runpod_job_id": _text_or_none(inp.get("runpod_job_id") or inp.get("runpodJobId") or job.get("id")),
+    }
+
+
+def _mark_video_processing(inp: dict, job: dict) -> str | None:
+    if not _should_persist(inp):
+        return None
+
+    meta = _metadata(inp, job)
+    params = _detection_params(inp)
+
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            if meta["video_id"]:
+                cur.execute(
+                    """
+                    UPDATE videos
+                    SET album_id = COALESCE(%s::uuid, album_id),
+                        album_event_id = COALESCE(%s::uuid, album_event_id),
+                        customer_id = COALESCE(%s::uuid, customer_id),
+                        file_name = COALESCE(%s, file_name),
+                        original_s3_key = COALESCE(%s, original_s3_key),
+                        storage_album_slug = COALESCE(%s, storage_album_slug),
+                        storage_event_slug = COALESCE(%s, storage_event_slug),
+                        detection_params = %s::jsonb,
+                        target_person_id = COALESCE(%s::uuid, target_person_id),
+                        target_s3_keys = COALESCE(%s::jsonb, target_s3_keys),
+                        runpod_endpoint_id = COALESCE(%s, runpod_endpoint_id),
+                        runpod_job_id = COALESCE(%s, runpod_job_id),
+                        detection_status = 'processing',
+                        detection_error = NULL,
+                        updated_at = now()
+                    WHERE id = %s::uuid
+                    RETURNING id
+                    """,
+                    [
+                        meta["album_id"],
+                        meta["album_event_id"],
+                        meta["customer_id"],
+                        meta["file_name"],
+                        meta["original_s3_key"],
+                        meta["storage_album_slug"],
+                        meta["storage_event_slug"],
+                        _json_value(params),
+                        meta["target_person_id"],
+                        _json_value(meta["target_s3_keys"]) if meta["target_s3_keys"] is not None else None,
+                        meta["runpod_endpoint_id"],
+                        meta["runpod_job_id"],
+                        meta["video_id"],
+                    ],
+                )
+                row = cur.fetchone()
+                if row:
+                    return str(row["id"])
+
+            cur.execute(
+                """
+                INSERT INTO videos(
+                  id,
+                  album_id,
+                  album_event_id,
+                  customer_id,
+                  file_name,
+                  original_s3_key,
+                  storage_album_slug,
+                  storage_event_slug,
+                  detection_params,
+                  target_person_id,
+                  target_s3_keys,
+                  runpod_endpoint_id,
+                  runpod_job_id,
+                  detection_status,
+                  created_at,
+                  updated_at
+                )
+                VALUES(
+                  COALESCE(%s::uuid, gen_random_uuid()),
+                  %s::uuid,
+                  %s::uuid,
+                  %s::uuid,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s::jsonb,
+                  %s::uuid,
+                  %s::jsonb,
+                  %s,
+                  %s,
+                  'processing',
+                  now(),
+                  now()
+                )
+                RETURNING id
+                """,
+                [
+                    meta["video_id"],
+                    meta["album_id"],
+                    meta["album_event_id"],
+                    meta["customer_id"],
+                    meta["file_name"],
+                    meta["original_s3_key"],
+                    meta["storage_album_slug"],
+                    meta["storage_event_slug"],
+                    _json_value(params),
+                    meta["target_person_id"],
+                    _json_value(meta["target_s3_keys"] or []),
+                    meta["runpod_endpoint_id"],
+                    meta["runpod_job_id"],
+                ],
+            )
+            row = cur.fetchone()
+            return str(row["id"])
+
+
+def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -> None:
+    meta = _metadata(inp, job)
+    params = _detection_params(inp)
+    matches = result.get("matches") or []
+
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE videos
+                SET duration_sec = %s,
+                    model = %s,
+                    detection_params = %s::jsonb,
+                    target_s3_keys = COALESCE(%s::jsonb, target_s3_keys),
+                    runpod_endpoint_id = COALESCE(%s, runpod_endpoint_id),
+                    runpod_job_id = COALESCE(%s, runpod_job_id),
+                    detection_status = 'completed',
+                    detection_error = NULL,
+                    result_json = %s::jsonb,
+                    match_count = %s,
+                    updated_at = now(),
+                    completed_at = now()
+                WHERE id = %s::uuid
+                """,
+                [
+                    result.get("duration_sec"),
+                    result.get("model"),
+                    _json_value(params),
+                    _json_value(meta["target_s3_keys"]) if meta["target_s3_keys"] is not None else None,
+                    meta["runpod_endpoint_id"],
+                    meta["runpod_job_id"],
+                    _json_value(result),
+                    len(matches),
+                    video_id,
+                ],
+            )
+            cur.execute("DELETE FROM video_face_matches WHERE video_id = %s::uuid", [video_id])
+            psycopg2.extras.execute_batch(
+                cur,
+                """
+                INSERT INTO video_face_matches(
+                  video_id,
+                  album_id,
+                  album_event_id,
+                  person_id,
+                  start_sec,
+                  end_sec,
+                  start_time,
+                  end_time,
+                  max_similarity,
+                  avg_similarity,
+                  frames_matched,
+                  verified
+                )
+                VALUES(%s::uuid, %s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [
+                    (
+                        video_id,
+                        meta["album_id"],
+                        meta["album_event_id"],
+                        meta["target_person_id"],
+                        match.get("start_sec"),
+                        match.get("end_sec"),
+                        match.get("start_time"),
+                        match.get("end_time"),
+                        match.get("max_similarity"),
+                        match.get("avg_similarity"),
+                        match.get("frames_matched"),
+                        match.get("verified"),
+                    )
+                    for match in matches
+                ],
+            )
+
+
+def _mark_video_failed(video_id: str | None, error: str) -> None:
+    if not video_id:
+        return
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE videos
+                SET detection_status = 'failed',
+                    detection_error = %s,
+                    updated_at = now(),
+                    completed_at = now()
+                WHERE id = %s::uuid
+                """,
+                [error, video_id],
+            )
+
+
 def handler(job: dict) -> dict:
     inp = job.get("input") or {}
+    video_id = None
 
     try:
+        video_id = _mark_video_processing(inp, job)
         with tempfile.TemporaryDirectory() as tmp_dir:
             video, targets = _resolve_inputs(inp, tmp_dir)
-            return run_detection(
+            result = run_detection(
                 video=video,
                 targets=targets,
                 matcher=_matcher,
@@ -132,7 +464,15 @@ def handler(job: dict) -> dict:
                 ),
                 progress=False,
             )
-    except (ValueError, RuntimeError) as exc:
+            if video_id:
+                _store_detection_result(video_id, inp, job, result)
+                result["video_id"] = video_id
+            return result
+    except Exception as exc:
+        try:
+            _mark_video_failed(video_id, str(exc))
+        except Exception as db_exc:
+            return {"error": str(exc), "db_error": str(db_exc), "video_id": video_id}
         return {"error": str(exc)}
 
 

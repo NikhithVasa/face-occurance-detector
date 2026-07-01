@@ -7,3 +7,4 @@ opencv-python
 numpy
 tqdm
 pydantic
+psycopg2-binary

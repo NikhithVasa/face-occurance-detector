@@ -14,6 +14,7 @@ dependencies = [
     "numpy",
     "tqdm",
     "pydantic",
+    "psycopg2-binary",
 ]
 
 [project.scripts]
