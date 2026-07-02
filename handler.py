@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import traceback
 import urllib.parse
 import urllib.request
 import uuid
@@ -677,9 +678,13 @@ def handler(job: dict) -> dict:
                 result["video_id"] = video_id
             return result
     except Exception as exc:
+        print(f"Video detection failed: {exc}", flush=True)
+        traceback.print_exc()
         try:
             _mark_video_failed(video_id, str(exc))
         except Exception as db_exc:
+            print(f"Could not mark video failed: {db_exc}", flush=True)
+            traceback.print_exc()
             return {"error": str(exc), "db_error": str(db_exc), "video_id": video_id}
         return {"error": str(exc)}
 
