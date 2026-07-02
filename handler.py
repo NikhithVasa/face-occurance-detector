@@ -37,8 +37,10 @@ Provide either the ``*_path`` form (files on a mounted network volume) or the
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import traceback
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -121,7 +123,64 @@ _METADATA_KEYS = {
 }
 
 
-def _download(url: str, dest_dir: str) -> str:
+def _log_event(stage: str, **fields) -> None:
+    payload = {"stage": stage, **fields}
+    print(json.dumps(payload, default=str, sort_keys=True), flush=True)
+
+
+def _count_values(value) -> int:
+    if isinstance(value, list):
+        return len([item for item in value if item])
+    if isinstance(value, str) and value.strip():
+        return 1
+    return 0
+
+
+def _url_summary(url: str) -> dict:
+    parsed = urllib.parse.urlparse(url)
+    return {
+        "host": parsed.netloc,
+        "file_name": os.path.basename(parsed.path) or "download",
+        "has_query": bool(parsed.query),
+    }
+
+
+def _input_summary(inp: dict) -> dict:
+    return {
+        "input_keys": sorted(inp.keys()),
+        "has_video_path": bool(inp.get("video_path")),
+        "has_video_url": bool(inp.get("video_url")),
+        "target_path_count": _count_values(inp.get("target_paths")),
+        "target_url_count": _count_values(inp.get("target_urls")),
+        "target_s3_key_count": _count_values(inp.get("target_s3_keys") or inp.get("targetS3Keys")),
+        "selected_person_count": _count_values(inp.get("selected_person_ids") or inp.get("selectedPersonIds")),
+        "target_person_count": _count_values(inp.get("target_person_ids") or inp.get("targetPersonIds")),
+        "discover_people": _discover_people(inp),
+        "persist_results": _should_persist(inp),
+        "video_id": inp.get("video_id") or inp.get("videoId"),
+        "album_id": inp.get("album_id") or inp.get("albumId"),
+        "album_event_id": inp.get("album_event_id") or inp.get("albumEventId") or inp.get("event_id") or inp.get("eventId"),
+        "customer_id": inp.get("customer_id") or inp.get("customerId"),
+        "file_name": inp.get("file_name") or inp.get("fileName"),
+        "storage_album_slug": inp.get("storage_album_slug") or inp.get("storageAlbumSlug") or inp.get("album_slug") or inp.get("albumSlug"),
+        "storage_event_slug": inp.get("storage_event_slug") or inp.get("storageEventSlug") or inp.get("event_slug") or inp.get("eventSlug"),
+    }
+
+
+def _result_summary(result: dict) -> dict:
+    matches = result.get("matches")
+    discovered_people = result.get("discovered_people")
+    return {
+        "duration_sec": result.get("duration_sec"),
+        "model": result.get("model"),
+        "target_count": result.get("target_count"),
+        "match_count": len(matches) if isinstance(matches, list) else 0,
+        "discovered_people_count": len(discovered_people) if isinstance(discovered_people, list) else 0,
+        "discovery": result.get("discovery"),
+    }
+
+
+def _download(url: str, dest_dir: str, label: str = "download") -> str:
     """Download an http(s) URL into dest_dir and return the local path."""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -129,33 +188,56 @@ def _download(url: str, dest_dir: str) -> str:
 
     name = os.path.basename(parsed.path) or "download"
     local_path = os.path.join(dest_dir, name)
+    started = time.monotonic()
+    _log_event("download_start", label=label, **_url_summary(url))
     with urllib.request.urlopen(url, timeout=120) as response, open(local_path, "wb") as fh:
         while True:
             block = response.read(1 << 20)
             if not block:
                 break
             fh.write(block)
+    _log_event(
+        "download_done",
+        label=label,
+        file_name=name,
+        local_path=local_path,
+        bytes=os.path.getsize(local_path),
+        elapsed_sec=round(time.monotonic() - started, 3),
+    )
     return local_path
 
 
 def _resolve_inputs(inp: dict, tmp_dir: str) -> tuple[str, list[str]]:
     """Resolve video and target inputs to local file paths."""
+    _log_event("resolve_inputs_start", tmp_dir=tmp_dir, **_input_summary(inp))
     video = inp.get("video_path")
     if not video:
         video_url = inp.get("video_url")
         if not video_url:
             raise ValueError("Provide either 'video_path' or 'video_url'.")
-        video = _download(video_url, tmp_dir)
+        video = _download(video_url, tmp_dir, label="video")
+    else:
+        _log_event("video_path_provided", path=video, exists=os.path.exists(video), bytes=os.path.getsize(video) if os.path.exists(video) else None)
 
     targets = inp.get("target_paths")
     if not targets:
         target_urls = inp.get("target_urls") or []
         if not target_urls and not _discover_people(inp):
             raise ValueError("Provide either 'target_paths' or 'target_urls'.")
-        targets = [_download(url, tmp_dir) for url in target_urls]
+        _log_event("target_urls_resolved", target_url_count=len(target_urls), discover_people=_discover_people(inp))
+        targets = [_download(url, tmp_dir, label=f"target_{index + 1}") for index, url in enumerate(target_urls)]
 
     if isinstance(targets, str):
         targets = [targets]
+
+    _log_event(
+        "resolve_inputs_done",
+        video_path=video,
+        video_exists=os.path.exists(video),
+        video_bytes=os.path.getsize(video) if os.path.exists(video) else None,
+        target_count=len(targets),
+        target_paths=[os.path.basename(path) for path in targets],
+    )
 
     return video, targets
 
@@ -302,15 +384,18 @@ def _album_faces_prefix(meta: dict) -> str | None:
 def _publish_unknown_face_thumbnails(result: dict, inp: dict, job: dict) -> None:
     people = result.get("discovered_people")
     if not isinstance(people, list):
+        _log_event("unknown_thumbnail_skip", reason="discovered_people_not_list")
         return
 
     discovery = result.setdefault("discovery", {})
+    _log_event("unknown_thumbnail_start", discovered_people_count=len(people), bucket_configured=bool(S3_BUCKET))
     if not S3_BUCKET:
         discovery["unknown_thumbnail_uploads"] = 0
         discovery["unknown_thumbnail_upload_error"] = "S3_BUCKET is not configured"
         for person in people:
             if isinstance(person, dict):
                 person.pop("thumbnail_path", None)
+        _log_event("unknown_thumbnail_skip", reason="s3_bucket_missing")
         return
 
     meta = _metadata(inp, job)
@@ -322,6 +407,7 @@ def _publish_unknown_face_thumbnails(result: dict, inp: dict, job: dict) -> None
         for person in people:
             if isinstance(person, dict):
                 person.pop("thumbnail_path", None)
+        _log_event("unknown_thumbnail_skip", reason="storage_album_slug_missing")
         return
 
     s3 = boto3.client("s3", region_name=S3_REGION)
@@ -331,9 +417,11 @@ def _publish_unknown_face_thumbnails(result: dict, inp: dict, job: dict) -> None
             continue
         thumbnail_path = person.pop("thumbnail_path", None)
         if not thumbnail_path or not os.path.exists(thumbnail_path):
+            _log_event("unknown_thumbnail_missing", index=index + 1, has_thumbnail_path=bool(thumbnail_path))
             continue
         key = f"{faces_prefix}/video-unknowns/{video_id}/unknown-{index + 1}.jpg"
         try:
+            _log_event("unknown_thumbnail_upload_start", index=index + 1, key=key, bytes=os.path.getsize(thumbnail_path))
             s3.upload_file(
                 thumbnail_path,
                 S3_BUCKET,
@@ -345,19 +433,24 @@ def _publish_unknown_face_thumbnails(result: dict, inp: dict, job: dict) -> None
             )
         except Exception as exc:
             discovery["unknown_thumbnail_upload_error"] = str(exc)
+            _log_event("unknown_thumbnail_upload_failed", index=index + 1, key=key, error=str(exc))
             continue
         person["thumbnail_s3_key"] = key
         uploaded += 1
+        _log_event("unknown_thumbnail_upload_done", index=index + 1, key=key)
 
     discovery["unknown_thumbnail_uploads"] = uploaded
+    _log_event("unknown_thumbnail_done", uploaded=uploaded, discovered_people_count=len(people))
 
 
 def _mark_video_processing(inp: dict, job: dict) -> str | None:
     if not _should_persist(inp):
+        _log_event("db_mark_processing_skip", reason="persist_disabled")
         return None
 
     meta = _metadata(inp, job)
     params = _detection_params(inp)
+    _log_event("db_mark_processing_start", video_id=meta.get("video_id"), album_id=meta.get("album_id"), event_id=meta.get("album_event_id"), discover_people=params.get("discover_people"))
 
     with _db_connect() as conn:
         with conn.cursor() as cur:
@@ -401,6 +494,7 @@ def _mark_video_processing(inp: dict, job: dict) -> str | None:
                 )
                 row = cur.fetchone()
                 if row:
+                    _log_event("db_mark_processing_done", mode="update", video_id=str(row["id"]))
                     return str(row["id"])
 
             cur.execute(
@@ -460,6 +554,7 @@ def _mark_video_processing(inp: dict, job: dict) -> str | None:
                 ],
             )
             row = cur.fetchone()
+            _log_event("db_mark_processing_done", mode="insert", video_id=str(row["id"]) if row else None)
             return str(row["id"])
 
 
@@ -483,6 +578,7 @@ def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -
     matches = result.get("matches") or []
     target_s3_keys = meta["target_s3_keys"] or []
     target_person_ids = _target_person_ids(inp)
+    _log_event("db_store_result_start", video_id=video_id, target_s3_key_count=len(target_s3_keys), target_person_id_count=len(target_person_ids), **_result_summary(result))
 
     def target_index_for(match: dict) -> int | None:
         value = match.get("target_index")
@@ -505,6 +601,7 @@ def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -
     with _db_connect() as conn:
         with conn.cursor() as cur:
             has_target_columns = _has_video_match_target_columns(cur)
+            _log_event("db_store_result_columns", video_id=video_id, has_target_columns=has_target_columns)
             cur.execute(
                 """
                 UPDATE videos
@@ -615,11 +712,14 @@ def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -
                         for match in matches
                     ],
                 )
+            _log_event("db_store_result_done", video_id=video_id, inserted_match_count=len(matches), has_target_columns=has_target_columns)
 
 
 def _mark_video_failed(video_id: str | None, error: str) -> None:
     if not video_id:
+        _log_event("db_mark_failed_skip", reason="missing_video_id", error=error)
         return
+    _log_event("db_mark_failed_start", video_id=video_id, error=error)
     with _db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -633,17 +733,35 @@ def _mark_video_failed(video_id: str | None, error: str) -> None:
                 """,
                 [error, video_id],
             )
+    _log_event("db_mark_failed_done", video_id=video_id)
 
 
 def handler(job: dict) -> dict:
     inp = job.get("input") or {}
     video_id = None
+    job_started = time.monotonic()
+    job_id = job.get("id") or job.get("requestId")
+    _log_event("job_received", job_id=job_id, **_input_summary(inp))
 
     try:
+        _log_event("job_mark_processing_start", job_id=job_id)
         video_id = _mark_video_processing(inp, job)
+        _log_event("job_mark_processing_done", job_id=job_id, video_id=video_id)
         with tempfile.TemporaryDirectory() as tmp_dir:
             video, targets = _resolve_inputs(inp, tmp_dir)
             unknown_face_dir = os.path.join(tmp_dir, "unknown-faces")
+            detection_started = time.monotonic()
+            _log_event(
+                "run_detection_start",
+                job_id=job_id,
+                video_id=video_id,
+                target_count=len(targets),
+                discover_people=_discover_people(inp),
+                fps=float(inp.get("fps", DEFAULT_FPS)),
+                chunks=int(inp.get("chunks", DEFAULT_CHUNKS)),
+                parallel_chunks=int(inp.get("parallel_chunks", DEFAULT_PARALLEL_CHUNKS)),
+                similarity_threshold=float(inp.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD)),
+            )
             result = run_detection(
                 video=video,
                 targets=targets,
@@ -670,20 +788,26 @@ def handler(job: dict) -> dict:
                     inp.get("unknown_similarity_threshold", inp.get("unknownSimilarityThreshold", DEFAULT_SIMILARITY_THRESHOLD))
                 ),
                 unknown_face_dir=unknown_face_dir,
-                progress=False,
+                progress=True,
             )
+            _log_event("run_detection_done", job_id=job_id, video_id=video_id, elapsed_sec=round(time.monotonic() - detection_started, 3), **_result_summary(result))
+            _log_event("publish_unknown_thumbnails_start", job_id=job_id, video_id=video_id)
             _publish_unknown_face_thumbnails(result, inp, job)
+            _log_event("publish_unknown_thumbnails_done", job_id=job_id, video_id=video_id, discovery=result.get("discovery"))
             if video_id:
+                _log_event("store_detection_result_start", job_id=job_id, video_id=video_id)
                 _store_detection_result(video_id, inp, job, result)
+                _log_event("store_detection_result_done", job_id=job_id, video_id=video_id)
                 result["video_id"] = video_id
+            _log_event("job_done", job_id=job_id, video_id=video_id, elapsed_sec=round(time.monotonic() - job_started, 3), **_result_summary(result))
             return result
     except Exception as exc:
-        print(f"Video detection failed: {exc}", flush=True)
+        _log_event("job_failed", job_id=job_id, video_id=video_id, elapsed_sec=round(time.monotonic() - job_started, 3), error=str(exc))
         traceback.print_exc()
         try:
             _mark_video_failed(video_id, str(exc))
         except Exception as db_exc:
-            print(f"Could not mark video failed: {db_exc}", flush=True)
+            _log_event("job_mark_failed_error", job_id=job_id, video_id=video_id, original_error=str(exc), db_error=str(db_exc))
             traceback.print_exc()
             return {"error": str(exc), "db_error": str(db_exc), "video_id": video_id}
         return {"error": str(exc)}
