@@ -79,7 +79,7 @@ class InsightFaceMatcher:
         """
         Extract normalized face embeddings from one or more reference images.
 
-        Raises ValueError if no face is detected in any reference image.
+        Raises ValueError if no face is detected in all reference images.
         When multiple faces appear in a single image, the largest face by bounding
         box area is used.
         """
@@ -90,11 +90,13 @@ class InsightFaceMatcher:
         for target_index, path in enumerate(target_paths):
             image = cv2.imread(path)
             if image is None:
-                raise ValueError(f"Could not read reference image: {path}")
+                print(f"Skipping unreadable reference image: {path}")
+                continue
 
             faces = self.app.get(image)
             if not faces:
-                raise ValueError(f"No face detected in reference image: {path}")
+                print(f"Skipping reference image with no detected face: {path}")
+                continue
 
             # Choose the largest face by bounding box area
             face = max(
@@ -110,6 +112,9 @@ class InsightFaceMatcher:
                     face_bbox=face.bbox.tolist(),
                 )
             )
+
+        if not embeddings:
+            raise ValueError("No face detected in any reference image")
 
         return embeddings
 

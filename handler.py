@@ -41,6 +41,7 @@ import json
 import tempfile
 import traceback
 import time
+import re
 import urllib.parse
 import urllib.request
 import uuid
@@ -187,7 +188,8 @@ def _download(url: str, dest_dir: str, label: str = "download") -> str:
         raise ValueError(f"Unsupported URL scheme: {parsed.scheme!r}")
 
     name = os.path.basename(parsed.path) or "download"
-    local_path = os.path.join(dest_dir, name)
+    safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._") or "download"
+    local_path = os.path.join(dest_dir, f"{safe_label}_{name}")
     started = time.monotonic()
     _log_event("download_start", label=label, **_url_summary(url))
     with urllib.request.urlopen(url, timeout=120) as response, open(local_path, "wb") as fh:
