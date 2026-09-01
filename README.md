@@ -176,6 +176,11 @@ Job input (provide either the `*_path` form for files on a mounted network volum
 
 The handler returns the same result object documented under [Output](#output) (or `{"error": "..."}` on bad input).
 
+For an album with no reference people, send an empty `target_urls` array with
+`discover_people: true`. The worker clusters detected faces, uploads a cover
+thumbnail for each cluster, creates reusable album People rows, and links the
+video timeline matches to those people.
+
 ### RunPod Pod (interactive CLI)
 
 In a GPU Pod, override the command to run the CLI against files on the pod/volume:

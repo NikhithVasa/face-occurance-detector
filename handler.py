@@ -574,12 +574,111 @@ def _has_video_match_target_columns(cur) -> bool:
     return bool(row and row["has_columns"])
 
 
+def _persist_discovered_people(cur, meta: dict, result: dict) -> dict[int, str]:
+    discovered = result.get("discovered_people")
+    album_id = meta.get("album_id")
+    if not album_id or not isinstance(discovered, list) or not discovered:
+        return {}
+
+    cur.execute(
+        "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+        (album_id, "video-discovered-people"),
+    )
+    cur.execute(
+        "SELECT COALESCE(MAX(person_number), 0) AS max_num FROM people WHERE album_id = %s::uuid",
+        (album_id,),
+    )
+    next_number = int(cur.fetchone()["max_num"] or 0) + 1
+    person_ids: dict[int, str] = {}
+
+    for person in discovered:
+        if not isinstance(person, dict):
+            continue
+        target_index = person.get("target_index")
+        thumbnail_key = _text_or_none(
+            person.get("thumbnail_s3_key") or person.get("thumbnailS3Key")
+        )
+        if not isinstance(target_index, int) or not thumbnail_key:
+            continue
+
+        cur.execute(
+            """
+            SELECT id, person_number
+            FROM people
+            WHERE album_id = %s::uuid
+              AND cover_face_s3_key = %s
+              AND COALESCE(is_hidden, false) = false
+            LIMIT 1
+            """,
+            (album_id, thumbnail_key),
+        )
+        existing = cur.fetchone()
+        if existing:
+            person_id = str(existing["id"])
+        else:
+            person_id = str(uuid.uuid4())
+            default_name = f"Person {next_number}"
+            occurrence_count = max(1, int(person.get("frames_matched") or 1))
+            cur.execute(
+                """
+                INSERT INTO people(
+                  id,
+                  album_id,
+                  person_number,
+                  default_name,
+                  display_name,
+                  cover_face_s3_key,
+                  face_count,
+                  photo_count,
+                  occurrence_count,
+                  created_at,
+                  updated_at
+                )
+                VALUES(
+                  %s::uuid,
+                  %s::uuid,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  0,
+                  %s,
+                  now(),
+                  now()
+                )
+                """,
+                (
+                    person_id,
+                    album_id,
+                    next_number,
+                    default_name,
+                    default_name,
+                    thumbnail_key,
+                    occurrence_count,
+                    occurrence_count,
+                ),
+            )
+            next_number += 1
+
+        person["person_id"] = person_id
+        person_ids[target_index] = person_id
+
+    _log_event(
+        "db_discovered_people_persisted",
+        album_id=album_id,
+        created_or_reused=len(person_ids),
+    )
+    return person_ids
+
+
 def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -> None:
     meta = _metadata(inp, job)
     params = _detection_params(inp)
     matches = result.get("matches") or []
     target_s3_keys = meta["target_s3_keys"] or []
     target_person_ids = _target_person_ids(inp)
+    discovered_person_ids: dict[int, str] = {}
     _log_event("db_store_result_start", video_id=video_id, target_s3_key_count=len(target_s3_keys), target_person_id_count=len(target_person_ids), **_result_summary(result))
 
     def target_index_for(match: dict) -> int | None:
@@ -597,13 +696,16 @@ def _store_detection_result(video_id: str, inp: dict, job: dict, result: dict) -
         if target_index is not None and 0 <= target_index < len(target_person_ids):
             return target_person_ids[target_index]
         if target_index is not None:
-            return None
+            return discovered_person_ids.get(target_index)
         return meta["target_person_id"]
 
     with _db_connect() as conn:
         with conn.cursor() as cur:
             has_target_columns = _has_video_match_target_columns(cur)
             _log_event("db_store_result_columns", video_id=video_id, has_target_columns=has_target_columns)
+            discovered_person_ids.update(
+                _persist_discovered_people(cur, meta, result)
+            )
             cur.execute(
                 """
                 UPDATE videos
