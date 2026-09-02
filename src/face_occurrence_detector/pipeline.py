@@ -196,6 +196,18 @@ def _cluster_unknown_faces(
     return matches, discovered
 
 
+def _build_target_embeddings(
+    matcher: InsightFaceMatcher,
+    targets: list[str],
+    discover_people: bool,
+) -> list[TargetEmbedding]:
+    if targets:
+        return matcher.build_target_embeddings(targets)
+    if discover_people:
+        return []
+    raise ValueError("Provide at least one target image or enable person discovery.")
+
+
 def run_detection(
     *,
     video: str,
@@ -251,9 +263,9 @@ def run_detection(
         )
     log(f"  ONNX Runtime providers: {', '.join(matcher.providers)}")
 
-    # 2. Build target embeddings.
+    # 2. Build target embeddings. Discovery-only jobs intentionally have none.
     log(f"Building target embeddings from {len(targets)} image(s)...")
-    target_embeddings = matcher.build_target_embeddings(targets)
+    target_embeddings = _build_target_embeddings(matcher, targets, discover_people)
     log(f"  Built {len(target_embeddings)} embedding(s).")
 
     # 3. Inspect video.
